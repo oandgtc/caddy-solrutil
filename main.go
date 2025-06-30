@@ -1,5 +1,6 @@
 package user_role_plugin
-//updated by DB
+
+//updated by DJB
 
 import (
 	"crypto/tls"
@@ -22,31 +23,31 @@ type UserRolePlugin struct {
 }
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
-func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) (int, error) {
+func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) error {
 	accessToken := r.Header.Get("Authorization")
 	if accessToken == "" {
-		return http.StatusUnauthorized, fmt.Errorf("missing Authorization header")
+		http.Error(w, "missing Authorization header", http.StatusUnauthorized)
+		return fmt.Errorf("missing Authorization header")
 	}
 
 	email := extractEmailFromToken(accessToken)
 	if email == "" {
-		return http.StatusUnauthorized, fmt.Errorf("invalid token, email claim missing")
+		http.Error(w, "invalid token, email claim missing", http.StatusUnauthorized)
+		return fmt.Errorf("invalid token, email claim missing")
 	}
 
 	hasRoles, err := userHasRolesInSolr(email)
 	if err != nil {
-		return http.StatusInternalServerError, fmt.Errorf("error checking Solr roles: %v", err)
+		http.Error(w, "error checking Solr roles", http.StatusInternalServerError)
+		return fmt.Errorf("error checking Solr roles: %v", err)
 	}
 	if !hasRoles {
-		return http.StatusForbidden, fmt.Errorf("user roles not found in Solr")
+		http.Error(w, "user roles not found in Solr", http.StatusForbidden)
+		return fmt.Errorf("user roles not found in Solr")
 	}
 
 	// Pass to the next handler in the chain
-	err = p.Next.ServeHTTP(w, r)
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
-	return http.StatusOK, nil
+	return p.Next.ServeHTTP(w, r)
 }
 
 func extractEmailFromToken(token string) string {
