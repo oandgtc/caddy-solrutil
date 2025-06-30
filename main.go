@@ -1,81 +1,74 @@
 package user_role_plugin
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
-	"encoding/json"
-	"github.com/caddyserver/caddy/v2"
-	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
-	"golang.org/x/net/context"
 	"os"
 	"time"
-	"golang.org/x/crypto/acme/autocert"
-	"net/http/httputil"
+
+	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 )
 
 type UserRolePlugin struct {
-	// Add any configuration options here, like Solr URLs, etc.
+	Next         caddyhttp.Handler `json:"-"`
 	SolrURL      string
 	SolrUsername string
 	SolrPassword string
 }
 
+// ServeHTTP implements caddyhttp.MiddlewareHandler.
 func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) (int, error) {
-	// Extract the user email claim from the Access Token (OIDC)
 	accessToken := r.Header.Get("Authorization")
 	if accessToken == "" {
 		return http.StatusUnauthorized, fmt.Errorf("missing Authorization header")
 	}
 
-	// Now, we will get the email from the OIDC claim
 	email := extractEmailFromToken(accessToken)
 	if email == "" {
 		return http.StatusUnauthorized, fmt.Errorf("invalid token, email claim missing")
 	}
 
-	// Call SolrUtil to check if this user exists and has appropriate roles
-	if !userHasRolesInSolr(email) {
+	hasRoles, err := userHasRolesInSolr(email)
+	if err != nil {
+		return http.StatusInternalServerError, fmt.Errorf("error checking Solr roles: %v", err)
+	}
+	if !hasRoles {
 		return http.StatusForbidden, fmt.Errorf("user roles not found in Solr")
 	}
 
-	// If everything checks out, continue with the request
-	return caddyhttp.DefaultHandler(w, r)
+	// Pass to the next handler in the chain
+	return p.Next.ServeHTTP(w, r)
 }
 
 func extractEmailFromToken(token string) string {
-	// Simulate decoding JWT or other token types to extract the user email
-	// In reality, you would use a JWT library to decode and parse claims
-	// Here we're just simulating it for the sake of example
-	return "user@example.com" // Replace with actual logic to parse token
+	// Simulate decoding the JWT token
+	return "user@example.com" // Replace with actual logic
 }
 
-func userHasRolesInSolr(email string) bool {
-	// Perform Solr request to check if the user has roles
-	// Solr request code here (using basic authentication)
-
+func userHasRolesInSolr(email string) (bool, error) {
 	solrURL := "https://localhost:8983/solr/your_collection/select"
 	req, err := http.NewRequest("GET", solrURL, nil)
 	if err != nil {
-		fmt.Println("Error creating Solr request:", err)
-		return false
+		return false, fmt.Errorf("creating Solr request: %w", err)
 	}
 
-	// Add Solr basic authentication headers
 	username := "admin" + os.Getenv("GD_SITE_ID")
 	password := os.Getenv("GD_SITE_ID")
 	req.SetBasicAuth(username, password)
 
 	q := req.URL.Query()
-	q.Add("q", fmt.Sprintf("email:%s", email)) // Assuming you store email as part of the Solr document
-	q.Add("fl", "userRoles")  // Assuming roles are stored in a field 'userRoles'
+	q.Add("q", fmt.Sprintf("email:%s", email))
+	q.Add("fl", "userRoles")
 	req.URL.RawQuery = q.Encode()
 
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // Ignore cert verification (for self-signed certs)
+				InsecureSkipVerify: true,
 			},
 		},
 		Timeout: 10 * time.Second,
@@ -83,17 +76,14 @@ func userHasRolesInSolr(email string) bool {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("Error sending Solr request:", err)
-		return false
+		return false, fmt.Errorf("sending Solr request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Println("Solr request failed with status:", resp.Status)
-		return false
+		return false, fmt.Errorf("Solr request failed with status: %s", resp.Status)
 	}
 
-	// Parse the Solr response and check for roles
 	var solrResp struct {
 		Response struct {
 			Docs []struct {
@@ -103,32 +93,59 @@ func userHasRolesInSolr(email string) bool {
 	}
 	err = json.NewDecoder(resp.Body).Decode(&solrResp)
 	if err != nil {
-		fmt.Println("Error parsing Solr response:", err)
-		return false
+		return false, fmt.Errorf("parsing Solr response: %w", err)
 	}
 
-	// Check if the user has any roles in Solr
 	if len(solrResp.Response.Docs) == 0 {
-		return false
+		return false, nil
 	}
 
-	// You can check specific roles if needed
 	for _, role := range solrResp.Response.Docs[0].UserRoles {
 		if role == "desired_role" {
-			return true
+			return true, nil
 		}
 	}
 
-	return false
+	return false, nil
 }
 
+// Caddy module registration
 func init() {
 	caddy.RegisterModule(UserRolePlugin{})
 }
 
+// CaddyModule returns the Caddy module information.
 func (UserRolePlugin) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.user_role_plugin",
 		New: func() caddy.Module { return new(UserRolePlugin) },
 	}
+}
+
+// UnmarshalCaddyfile configures the plugin from Caddyfile.
+func (p *UserRolePlugin) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
+	for d.Next() {
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case "solr_url":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				p.SolrURL = d.Val()
+			case "solr_username":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				p.SolrUsername = d.Val()
+			case "solr_password":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				p.SolrPassword = d.Val()
+			default:
+				return d.Errf("unrecognized directive: %s", d.Val())
+			}
+		}
+	}
+	return nil
 }
