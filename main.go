@@ -1,4 +1,5 @@
 package user_role_plugin
+//updated by DB
 
 import (
 	"crypto/tls"
@@ -41,7 +42,11 @@ func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) (int,
 	}
 
 	// Pass to the next handler in the chain
-	return p.Next.ServeHTTP(w, r)
+	err = p.Next.ServeHTTP(w, r)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	return http.StatusOK, nil
 }
 
 func extractEmailFromToken(token string) string {
