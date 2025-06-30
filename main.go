@@ -23,32 +23,37 @@ type UserRolePlugin struct {
 }
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
-func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) error {
+func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) (int, error) {
 	accessToken := r.Header.Get("Authorization")
 	if accessToken == "" {
 		http.Error(w, "missing Authorization header", http.StatusUnauthorized)
-		return fmt.Errorf("missing Authorization header")
+		return http.StatusUnauthorized, fmt.Errorf("missing Authorization header")
 	}
 
 	email := extractEmailFromToken(accessToken)
 	if email == "" {
 		http.Error(w, "invalid token, email claim missing", http.StatusUnauthorized)
-		return fmt.Errorf("invalid token, email claim missing")
+		return http.StatusUnauthorized, fmt.Errorf("invalid token, email claim missing")
 	}
 
 	hasRoles, err := userHasRolesInSolr(email)
 	if err != nil {
 		http.Error(w, "error checking Solr roles", http.StatusInternalServerError)
-		return fmt.Errorf("error checking Solr roles: %v", err)
+		return http.StatusInternalServerError, fmt.Errorf("error checking Solr roles: %v", err)
 	}
 	if !hasRoles {
 		http.Error(w, "user roles not found in Solr", http.StatusForbidden)
-		return fmt.Errorf("user roles not found in Solr")
+		return http.StatusForbidden, fmt.Errorf("user roles not found in Solr")
 	}
 
 	// Pass to the next handler in the chain
-	return p.Next.ServeHTTP(w, r)
+	err = p.Next.ServeHTTP(w, r)
+	if err != nil {
+		return 0, err
+	}
+	return 0, nil
 }
+
 
 func extractEmailFromToken(token string) string {
 	// Simulate decoding the JWT token
