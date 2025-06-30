@@ -1,7 +1,5 @@
 package user_role_plugin
 
-//updated by DJB
-
 import (
 	"crypto/tls"
 	"encoding/json"
@@ -17,12 +15,12 @@ import (
 
 type UserRolePlugin struct {
 	Next         caddyhttp.Handler `json:"-"`
-	SolrURL      string
-	SolrUsername string
-	SolrPassword string
+	SolrURL      string            `json:"solr_url,omitempty"`
+	SolrUsername string            `json:"solr_username,omitempty"`
+	SolrPassword string            `json:"solr_password,omitempty"`
 }
 
-// ServeHTTP implements caddyhttp.MiddlewareHandler.
+// ServeHTTP implements the caddyhttp.MiddlewareHandler interface.
 func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) (int, error) {
 	accessToken := r.Header.Get("Authorization")
 	if accessToken == "" {
@@ -36,40 +34,35 @@ func (p *UserRolePlugin) ServeHTTP(w http.ResponseWriter, r *http.Request) (int,
 		return http.StatusUnauthorized, fmt.Errorf("invalid token, email claim missing")
 	}
 
-	hasRoles, err := userHasRolesInSolr(email)
+	hasRoles, err := p.userHasRolesInSolr(email)
 	if err != nil {
 		http.Error(w, "error checking Solr roles", http.StatusInternalServerError)
-		return http.StatusInternalServerError, fmt.Errorf("error checking Solr roles: %v", err)
+		return http.StatusInternalServerError, fmt.Errorf("error checking Solr roles: %w", err)
 	}
 	if !hasRoles {
 		http.Error(w, "user roles not found in Solr", http.StatusForbidden)
 		return http.StatusForbidden, fmt.Errorf("user roles not found in Solr")
 	}
 
-	// Pass to the next handler in the chain
-	err = p.Next.ServeHTTP(w, r)
-	if err != nil {
-		return 0, err
-	}
-	return 0, nil
+	// Pass request to the next handler
+	return p.Next.ServeHTTP(w, r)
 }
-
 
 func extractEmailFromToken(token string) string {
-	// Simulate decoding the JWT token
-	return "user@example.com" // Replace with actual logic
+	// TODO: Implement real JWT parsing here
+	// This is a placeholder:
+	return "user@example.com"
 }
 
-func userHasRolesInSolr(email string) (bool, error) {
-	solrURL := "https://localhost:8983/solr/your_collection/select"
-	req, err := http.NewRequest("GET", solrURL, nil)
+// userHasRolesInSolr checks the user's roles in Solr using the configured Solr URL and credentials.
+func (p *UserRolePlugin) userHasRolesInSolr(email string) (bool, error) {
+	req, err := http.NewRequest("GET", p.SolrURL, nil)
 	if err != nil {
 		return false, fmt.Errorf("creating Solr request: %w", err)
 	}
 
-	username := "admin" + os.Getenv("GD_SITE_ID")
-	password := os.Getenv("GD_SITE_ID")
-	req.SetBasicAuth(username, password)
+	// Use configured username and password
+	req.SetBasicAuth(p.SolrUsername, p.SolrPassword)
 
 	q := req.URL.Query()
 	q.Add("q", fmt.Sprintf("email:%s", email))
@@ -79,7 +72,7 @@ func userHasRolesInSolr(email string) (bool, error) {
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
+				InsecureSkipVerify: true, // consider making this configurable for production
 			},
 		},
 		Timeout: 10 * time.Second,
@@ -102,8 +95,8 @@ func userHasRolesInSolr(email string) (bool, error) {
 			} `json:"docs"`
 		} `json:"response"`
 	}
-	err = json.NewDecoder(resp.Body).Decode(&solrResp)
-	if err != nil {
+
+	if err := json.NewDecoder(resp.Body).Decode(&solrResp); err != nil {
 		return false, fmt.Errorf("parsing Solr response: %w", err)
 	}
 
@@ -133,7 +126,7 @@ func (UserRolePlugin) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-// UnmarshalCaddyfile configures the plugin from Caddyfile.
+// UnmarshalCaddyfile configures the plugin from the Caddyfile.
 func (p *UserRolePlugin) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
